@@ -1,0 +1,448 @@
+---
+title: "Yelp Machine Learning Project"
+author: "Tammy Truong"
+date: '2022-06-09'
+output: 
+    html_document:
+      toc: true
+      toc_float: true
+      code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rjson)
+library(readr)
+library(DBI)
+library(viridis)
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+library(jsonlite)
+library(dbplyr)
+library(dplyr)
+library(tidymodels)
+library(ISLR) 
+library(ISLR2) 
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(corrplot)
+library(klaR) 
+library(pROC)
+library(glmnet)
+library(MASS)
+library(janitor)
+library(randomForest)
+library(gridExtra)
+library(rpart.plot)
+library(vip)
+```
+
+\tableofcontents 
+
+# Preface
+
+While working on my Yelp project, I realized that I couldn't merge the $2$ Yelp data sets as I mentioned in my data memo. The initial arrangement for this project was to merge a review data set along with the specifics that may include location, elite Yelp status, and business categories of the business data set. The variables I was targeting would not be matching up to the reviews so the data set would be invalid. Consequently, I have changed the trajectory of my analysis into predicting Yelp review ratings through the review data set from the official Yelp website. 
+
+Update: My dataset has failed to fit the models and thus I will be unable perform accurate machine learning to my data.
+
+
+# Introduction
+
+Yelp is a widely renowned company for its new innovation of publishing customers' reviews for businesses and services in the world. Businesses thrive on Yelp as consumers utilize Yelp on a daily basis, constantly checking the ratings and reviews for their next meal or service. As people on the receiving end of Yelp, we often look for places with high ratings, typically over an average of 4-stars. 
+
+As an avid user of Yelp, I'm hoping to apply machine learning into predicting my question of interest, utilizing the votes reviewers' receive on their comments.
+
+# Questions of Interest
+-  Can we predict the rating of a review based on the number of votes (useful, funny, cool) they received? 
+
+# Overview of the Dataset
+
+The Yelp dataset from the official site is 4GB, containing millions of reviews. Since the file was too big, I opted for a smaller dataset found from Kaggle from the user `omkarsabnis`. The link is https://www.kaggle.com/datasets/omkarsabnis/yelp-reviews-dataset. This dataset primarily focuses on the reviews, focusing on the following variables:
+
+* `business_id`: unique business id (categorical)
+* `date`: date of the review formatted in YYYY-MM-DD (categorical)
+* `review_id`: unique review id (categorical)
+* `stars`: star rating (categorical)
+* `text`: the review itself
+* `type`: type of entry (categorical)
+* `user_id`: unique user id (categorical)
+* `cool`: number of cool votes received (numerical)
+* `useful`: number of useful votes received (numerical)
+* `funny`: number of funny votes received (numerical)
+
+The variable `type` and `text` is clearly not useful to our data because all entries are reviews and the details of the reviews will not be employed in this project therefore we can forego both variables. 
+
+First, we will read in the raw Yelp file and load the specifics.
+
+```{r}
+yelp <- read_csv("yelp.csv")
+str(yelp) # check the specifics of the data
+```
+
+# Data Cleaning
+
+We will first extract `reviews` from this dataset. We will be using the rest of the variables for this analysis. 
+
+The `select` function does not seem to work with R so I explicitly used the function directly from the `dplyr` package.
+
+```{r}
+yelp <- yelp %>% # remove the variables type and text from data
+  dplyr::select(-type) %>%
+  dplyr::select(-text)
+```
+
+We check to see if our dataset has any missing data to ensure that we will preform the analysis with the best accuracy.
+
+```{r}
+is.null(yelp)
+```
+
+Now, we clean names.
+
+```{r}
+yelp <- yelp %>%
+  clean_names()
+
+head(yelp)
+```
+
+# Exploratory Data Analysis
+
+## Star Rating Variable
+
+We will now begin the exploratory data analysis where we analyze the focused variables such as `stars` and the votes (`useful`, `funny`, and `cool`). First, we plot to see the visuals of reviews with $1, 2, 3, 4,$ or $5$ star ratings. 
+```{r, fig.width = 12, fig.height = 6}
+ggplot(yelp, aes(stars)) +
+  geom_bar(color = 'white') +
+  labs( title = "Count of Reviews With Its Respective Ratings",
+    x = "Count",
+    y = "Amount N Star Reviews") +
+  coord_flip()
+```
+According to the plot, there seems to be high amount of $5-$star and $4$-star rating reviews. $4$-stars seem to be the most common rating for a review of a business. Observe how there are significantly less $1, 2,$ and $3$-star ratings, implying that there are typically more consumers who are satisfied than not. 
+
+## Vote Variables
+
+Now, we can view the histogram of all vote variables.
+
+```{r, fig.width = 7, fig.height=4, warning = FALSE}
+usefulplot <- ggplot(yelp, aes(useful)) +
+  geom_bar(color = 'white') +
+  labs(title = "Count of Useful Reviews",
+    x = "Count",
+    y = "Amount of Reviews") +
+  theme(plot.title = element_text(size = 10))
+
+
+funnyplot <- ggplot(yelp, aes(funny)) +
+  geom_bar(color = 'white') +
+  labs(title = "Count of Funny Reviews",
+    x = "Count",
+    y = "Amount of Reviews") +
+  theme(plot.title = element_text(size = 10))
+
+
+coolplot <- ggplot(yelp, aes(cool)) +
+  geom_bar(color = 'white') +
+  labs(title = "Count of Cool Reviews",
+    x = "Count",
+    y = "Amount of Reviews") +
+  theme(plot.title = element_text(size = 10))
+
+
+grid.arrange(usefulplot, funnyplot, coolplot, ncol=3, 
+             top = "Histograms of All Vote Variables")
+
+```
+
+Notice how most users receive $0$ votes on their reviews. Having a vote on a review is very uncommon but it depicts how well written the users' reviews are. Usually `useful` votes are given when the review provides meticulous details to the service and environment received from the business. On the contrary, `funny` and `cool` have significantly less reviews, showing that majority of the users are searching for more useful reviews.
+
+## Relationship Between Variables
+We now compare the relationship between `stars` to the votes received. 
+
+```{r}
+plot1 <- ggplot(yelp, aes(stars, useful)) + geom_point()
+plot2 <- ggplot(yelp, aes(stars, funny)) + geom_point()
+plot3 <- ggplot(yelp, aes(stars, cool)) + geom_point()
+
+grid.arrange(plot1, plot2, plot3, ncol=3)
+```
+
+There is a clear cluster around reviews $20$ or less that receive votes. Majority of the reviews with votes typically have $20$ or less but there are outliers, especially around the $4$ or $5$ star reviews.
+
+\newpage
+
+Since `useful` is the most significant variable out of the votes to predict the star ratings, we will compare the histograms of stars by useful votes, showing the explicit number of reviews with n amount of useful votes.
+
+```{r}
+ggplot(yelp, aes(stars)) +
+  geom_histogram(bins = 30, color = "white") +
+  facet_wrap(~useful, scales = "free_y") +
+  labs(x = 'stars', y = 'reviews',
+    title = "Histogram of Stars by Useful Votes"
+  )
+```
+
+The above plots show that there is a relationship between high amount of `useful` votes linked with 5-star rating reviews. However, since most of the reviews (as seen on the first histogram) are comprised of 4 and 5 star ratings, we know that it will continue as a trend in these plots as well. 
+
+Now, we will compare relationships between variables through the votes. First, we will create plots that show the relationship of `cool` vs. `useful` by `stars`.
+
+```{r}
+yelp %>% 
+  ggplot(aes(cool, useful)) +
+  geom_point(alpha = 0.1) +
+  stat_summary(fun.y=mean, colour="red", geom="line", size = 3)+
+  facet_wrap(~ stars, scales = "free") +
+  labs(
+    title = "Cool vs. Useful by Stars"
+  )
+```
+
+There seems to be a positive relationship between `cool` and `useful` for majority of the `stars` ratings. For $2$-star ratings, there is staggering plot at around $7$ to $8$ `cool` votes.
+
+# Model Building 
+
+## Data Split
+Before we split the dataset, we convert the respective variables into categorical. We now split the dataset into a training and testing set, using a proportion of $80%$ for the training set and $20%$ for the testing set, and stratifying on the variable `stars`.
+```{r}
+set.seed(1004)
+
+yelp_split <- initial_split(yelp, prop = 0.80, strata = stars)
+yelp_train <- training(yelp_split)
+yelp_test <- testing(yelp_split)
+
+```
+
+Verify that the training and testing set have the appropriate observations.
+
+```{r}
+nrow(yelp_train) # check for # of obs of training and testing set
+nrow(yelp_test)
+```
+## Folding the Data
+
+10-fold cross-validation repeated 5 times stratifying `stars`.
+```{r}
+yelp_folds <- vfold_cv(yelp_train, v = 10, repeats = 5)
+yelp_folds
+```
+
+## Building the Recipe
+
+We now build the recipe by using `step_dummy` to turn variables into numeric and `step_normalize` to normalize and center our data.
+
+```{r}
+yelp_recipe <- recipe(stars ~ cool + useful + funny, data = yelp_train) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize() 
+```
+
+## Model 1: 
+-  Logistic Regression (LR)
+-  Linear Discriminant Analysis (LDA)
+-  Quantitative Descriptive Analysis (QDA)
+
+### Logistic Regression
+
+We use the `glm` engine and create a workflow, add the appropriate recipe, and apply the workflow to my folded data. 
+First, we set engine.
+```{r error = TRUE}
+log_reg <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+```
+
+Then, we create a workflow with our recipe.
+
+```{r}
+log_wkflow <- workflow() %>%
+  add_model(log_reg) %>%
+  add_recipe(yelp_recipe)
+```
+
+Lastly, we fit the model
+```{r, error = TRUE}
+log_fit <- log_wkflow %>%
+  fit_resamples(yelp_folds)
+
+collect_metrics(log_fit)
+```
+
+Unfortunately, I believe the dataset I have chosen is not fitted for machine learning and thus my models cannot be fitted. Below are the codes I've used to fit the models but it results to errors. I have prevented the errors from filling up this project by setting `eval = FALSE`. 
+
+### Linear Discriminant Analysis
+
+This is the same process as Logistic Regression but we use the engine `MASS` instead of `glm` and `discrim_linear` instead of `logistic_reg`.
+
+```{r error = TRUE, eval = FALSE}
+lda_mod <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+lda_wkflow <- workflow() %>% 
+  add_model(lda_mod) %>% 
+  add_recipe(yelp_recipe)
+
+lda_fit <- lda_wkflow %>%
+  fit_resamples(yelp_folds)
+
+collect_metrics(lda_fit)
+```
+
+### Quantitative Descriptive Analysis
+
+Similar to LDA, this is also a repeated process compared to the two but using `discrim_quad` instead of `discrim_linear` and continues to use the `MASS` engine.
+
+```{r error = TRUE, eval = FALSE}
+qda_mod <- discrim_quad() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+qda_wkflow <- workflow() %>% 
+  add_model(qda_mod) %>% 
+  add_recipe(yelp_recipe)
+
+qda_fit <- qda_wkflow %>%
+  fit_resamples(yelp_folds)
+
+collect_metrics(qda_fit)
+```
+
+## Model 2: Random Forest
+
+We set engine as `randomForest`, mode as `classification` and set workflow. We then tune the parameters. 
+
+```{r error = TRUE, eval = FALSE}
+rf_spec <- rand_forest(mtry = tune(),trees = tune(), min_n = tune()) %>%
+  set_engine("randomForest", importance = TRUE) %>%
+  set_mode("classification")
+
+rf_wkflow <- workflow() %>%
+  add_model(rf_spec) %>% 
+  add_recipe(yelp_recipe)
+```
+
+
+Then we set up the grid.
+
+```{r error = TRUE, eval = FALSE}
+param_grid_rf <- grid_regular(mtry(range = c(1, 7)),
+                           trees(range = c(10, 1000)), 
+                           min_n(range = c(1, 10)),
+                           levels = 10)
+```
+
+Lastly, we tune the model with cross fold validation and show our results.
+
+```{r error = TRUE, eval = FALSE}
+rf_tune <- tune_grid(rf_wkflow, 
+  resamples = yelp_folds, 
+  grid = param_grid_rf, 
+  metrics = metric_set(roc_auc))
+
+autoplot(rf_tune)
+```
+
+## Decision Tree
+
+Similar to the models above, we set the engine to `rpart`.
+
+```{r}
+tree_spec <- decision_tree() %>%
+  set_engine("rpart")
+```
+
+Set mode to classification.
+
+```{r}
+class_tree_spec <- tree_spec %>%
+  set_mode("classification")
+```
+
+We set up the workflow and tune our parameters.
+
+```{r}
+class_tree_wkflow <- workflow() %>%
+  add_recipe(yelp_recipe) %>%
+  add_model(class_tree_spec %>% set_args(cost_complexity = tune()))
+```
+
+Next, we set up our grid.
+
+```{r}
+param_grid <- grid_regular(cost_complexity(range = c(-4, -1)), levels = 10)
+```
+
+Now we tune our parameters and resample with our folded data.
+
+```{r, error = TRUE, eval = FALSE}
+tune_res <- tune_grid(
+  class_tree_wkflow, 
+  resamples = yelp_folds, 
+  grid = param_grid
+)
+```
+
+```{r error = TRUE, eval = FALSE}
+autoplot(tune_res)
+```
+
+We now select the best performing value, finalize the workflow, and fit the model on the training set.
+
+```{r error = TRUE, eval = FALSE}
+best_complexity <- select_best(tune_res)
+
+reg_tree_final <- finalize_workflow(reg_tree_wf, best_complexity)
+
+reg_tree_final_fit <- fit(reg_tree_final, data = yelp_train)
+```
+
+Finally, we can visualize our Decision Tree plot.
+```{r error = TRUE, eval = FALSE}
+class_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+
+## K-Nearest Neighbors
+
+For our final model, we will produce the Nearest Neighbor model. Similarly to the last models, we will set the engine to `kknn` and mode to `regression`. However, we will only be tuning neighbors.
+```{r}
+knn_model <- 
+  nearest_neighbor(
+    neighbors = tune(),
+    mode = "regression") %>% 
+  set_engine("kknn")
+```
+
+Create a workflow and add our recipe.
+
+```{r}
+knn_workflow <- workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(yelp_recipe)
+```
+
+We set the grid at `levels` = $10$, tune, and fit the repeated cross fold validation.
+```{r error = TRUE, eval = FALSE}
+knn_params <- parameters(knn_model)
+
+knn_grid <- grid_regular(knn_params, levels = 10)
+
+knn_tune <- knn_workflow %>% 
+  tune_grid(
+    resamples = yelp_folds, 
+            grid = knn_grid)
+```
+
+Now we show our results.
+
+```{r, error = TRUE, eval = FALSE}
+autoplot(knn_tune)
+```
+
+Unfortunately, I cannot provide the results to any of my models due to my dataset, and thus, cannot conclude which model performed the best.
